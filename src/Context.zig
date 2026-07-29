@@ -85,7 +85,7 @@ pub fn readJson(ctx: *Context, comptime T: type) !T {
 pub fn readBody(ctx: *Context) ![]u8 {
     const scratch = try ctx.allocator.alloc(u8, 4096);
     const body_reader = try ctx.request.readerExpectContinue(scratch);
-    return body_reader.interface.allocRemaining(ctx.allocator, .limited64(ctx.max_body_bytes));
+    return body_reader.allocRemaining(ctx.allocator, .limited64(ctx.max_body_bytes));
 }
 
 pub const RespondOptions = struct {

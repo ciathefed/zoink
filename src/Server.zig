@@ -108,22 +108,23 @@ fn handleRequest(self: *Server, allocator: std.mem.Allocator, request: *http.Ser
         .max_body_bytes = self.options.max_body_bytes,
     };
 
-    const matched = self.router.match(ctx.method, ctx.path, &ctx.params);
+    const final_handler = self.router.match(ctx.method, ctx.path, &ctx.params) orelse notFound;
 
-    if (matched) |route_handler| {
-        var chain = try allocator.alloc(*const fn (*Context) anyerror!void, self.router.middlewares.items.len + 1);
-        @memcpy(chain[0..self.router.middlewares.items.len], self.router.middlewares.items);
-        chain[self.router.middlewares.items.len] = route_handler;
-        ctx.chain = chain;
-        ctx.next() catch |err| {
-            if (!ctx.responded) {
-                ctx.text(.internal_server_error, "500 Internal Server Error") catch {};
-            }
-            std.log.err("zoink: handler returned error: {t}", .{err});
-        };
-    } else {
-        try ctx.text(.not_found, "404 Not Found");
-    }
+    var chain = try allocator.alloc(*const fn (*Context) anyerror!void, self.router.middlewares.items.len + 1);
+    @memcpy(chain[0..self.router.middlewares.items.len], self.router.middlewares.items);
+    chain[self.router.middlewares.items.len] = final_handler;
+    ctx.chain = chain;
+
+    ctx.next() catch |err| {
+        if (!ctx.responded) {
+            ctx.text(.internal_server_error, "500 Internal Server Error") catch {};
+        }
+        std.log.err("zoink: handler returned error: {t}", .{err});
+    };
 
     return request.head.keep_alive;
+}
+
+fn notFound(ctx: *Context) !void {
+    try ctx.text(.not_found, "404 Not Found");
 }

@@ -29,6 +29,28 @@ pub const Params = struct {
     }
 };
 
+/// Methods collected while matching, when a request's path matches a route
+/// but its method doesn't. One slot per `http.Method` variant is enough.
+pub const AllowedMethods = struct {
+    pub const max = @typeInfo(http.Method).@"enum".fields.len;
+
+    methods: [max]http.Method = undefined,
+    len: u8 = 0,
+
+    pub fn slice(self: *const AllowedMethods) []const http.Method {
+        return self.methods[0..self.len];
+    }
+
+    fn push(self: *AllowedMethods, method: http.Method) void {
+        for (self.methods[0..self.len]) |m| {
+            if (m == method) return;
+        }
+        if (self.len >= max) return;
+        self.methods[self.len] = method;
+        self.len += 1;
+    }
+};
+
 const SegmentKind = enum { literal, param, wildcard };
 
 const Segment = struct {
@@ -116,17 +138,29 @@ pub const Router = struct {
         });
     }
 
-    /// Finds the first route matching `method` and `path`, filling `params`
-    /// with any captured path segments.
-    pub fn match(self: *const Router, method: http.Method, path: []const u8, params: *Params) ?Handler {
+    pub const Outcome = union(enum) {
+        found: Handler,
+        /// The path matched at least one route, but none for this method.
+        /// `allowed` (filled by `match`) lists the methods that would have
+        /// matched.
+        method_not_allowed,
+        not_found,
+    };
+
+    /// Finds the route matching `method` and `path`, filling `params` with
+    /// any captured path segments. If the path matches a route but the
+    /// method doesn't, returns `.method_not_allowed` and fills `allowed`
+    /// with the methods that do match the path.
+    pub fn match(self: *const Router, method: http.Method, path: []const u8, params: *Params, allowed: *AllowedMethods) Outcome {
+        allowed.len = 0;
         for (self.routes.items) |route| {
-            if (route.method) |m| {
-                if (m != method) continue;
-            }
             params.len = 0;
-            if (matchSegments(route.segments, path, params)) return route.handler;
+            if (!matchSegments(route.segments, path, params)) continue;
+
+            if (route.method == null or route.method.? == method) return .{ .found = route.handler };
+            allowed.push(route.method.?);
         }
-        return null;
+        return if (allowed.len == 0) .not_found else .method_not_allowed;
     }
 };
 
@@ -168,28 +202,40 @@ test "matches literal and param segments" {
     };
 
     try router.get("/users/:id", S.handler);
+    try router.post("/users/:id", S.handler);
     try router.get("/users/:id/posts/:post_id", S.handler);
     try router.get("/", S.handler);
     try router.get("/assets/*path", S.handler);
 
     var params: Params = .{};
+    var allowed: AllowedMethods = .{};
 
-    try std.testing.expect(router.match(.GET, "/users/42", &params) != null);
+    try std.testing.expect(router.match(.GET, "/users/42", &params, &allowed) == .found);
     try std.testing.expectEqualStrings("42", params.get("id").?);
 
     params = .{};
-    try std.testing.expect(router.match(.GET, "/users/42/posts/7", &params) != null);
+    try std.testing.expect(router.match(.GET, "/users/42/posts/7", &params, &allowed) == .found);
     try std.testing.expectEqualStrings("42", params.get("id").?);
     try std.testing.expectEqualStrings("7", params.get("post_id").?);
 
     params = .{};
-    try std.testing.expect(router.match(.GET, "/", &params) != null);
+    try std.testing.expect(router.match(.GET, "/", &params, &allowed) == .found);
 
     params = .{};
-    try std.testing.expect(router.match(.GET, "/assets/css/app.css", &params) != null);
+    try std.testing.expect(router.match(.GET, "/assets/css/app.css", &params, &allowed) == .found);
     try std.testing.expectEqualStrings("css/app.css", params.get("path").?);
 
     params = .{};
-    try std.testing.expect(router.match(.POST, "/users/42", &params) == null);
-    try std.testing.expect(router.match(.GET, "/nope", &params) == null);
+    try std.testing.expect(router.match(.GET, "/nope", &params, &allowed) == .not_found);
+
+    params = .{};
+    try std.testing.expect(router.match(.DELETE, "/users/42", &params, &allowed) == .method_not_allowed);
+    try std.testing.expectEqual(2, allowed.len);
+    var saw_get = false;
+    var saw_post = false;
+    for (allowed.slice()) |m| {
+        if (m == .GET) saw_get = true;
+        if (m == .POST) saw_post = true;
+    }
+    try std.testing.expect(saw_get and saw_post);
 }

@@ -4,7 +4,9 @@
 const std = @import("std");
 const http = std.http;
 const net = std.Io.net;
-const Router = @import("router.zig").Router;
+const router_mod = @import("router.zig");
+const Router = router_mod.Router;
+const Handler = router_mod.Handler;
 const Context = @import("Context.zig");
 
 const Server = @This();
@@ -108,9 +110,13 @@ fn handleRequest(self: *Server, allocator: std.mem.Allocator, request: *http.Ser
         .max_body_bytes = self.options.max_body_bytes,
     };
 
-    const final_handler = self.router.match(ctx.method, ctx.path, &ctx.params) orelse notFound;
+    const final_handler: Handler = switch (self.router.match(ctx.method, ctx.path, &ctx.params, &ctx.allowed_methods)) {
+        .found => |h| h,
+        .method_not_allowed => methodNotAllowed,
+        .not_found => notFound,
+    };
 
-    var chain = try allocator.alloc(*const fn (*Context) anyerror!void, self.router.middlewares.items.len + 1);
+    var chain = try allocator.alloc(Handler, self.router.middlewares.items.len + 1);
     @memcpy(chain[0..self.router.middlewares.items.len], self.router.middlewares.items);
     chain[self.router.middlewares.items.len] = final_handler;
     ctx.chain = chain;
@@ -127,4 +133,16 @@ fn handleRequest(self: *Server, allocator: std.mem.Allocator, request: *http.Ser
 
 fn notFound(ctx: *Context) !void {
     try ctx.text(.not_found, "404 Not Found");
+}
+
+fn methodNotAllowed(ctx: *Context) !void {
+    var allow: std.Io.Writer.Allocating = .init(ctx.allocator);
+    for (ctx.allowed_methods.slice(), 0..) |m, i| {
+        if (i != 0) try allow.writer.writeAll(", ");
+        try allow.writer.writeAll(@tagName(m));
+    }
+
+    try ctx.respond(.method_not_allowed, "text/plain; charset=utf-8", "405 Method Not Allowed", .{
+        .extra_headers = &.{.{ .name = "allow", .value = allow.written() }},
+    });
 }

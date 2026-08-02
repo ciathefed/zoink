@@ -38,6 +38,17 @@ fn assets(ctx: *zoink.Context) !void {
     try zoink.static.serve(ctx, "examples/public", ctx.param("path").?);
 }
 
+fn login(ctx: *zoink.Context) !void {
+    try ctx.setCookie("session", "abc123", .{});
+    try ctx.setCookie("theme", "dark", .{ .same_site = .strict, .max_age_seconds = 3600 });
+    try ctx.text(.ok, "cookies set");
+}
+
+fn whoami(ctx: *zoink.Context) !void {
+    const session = ctx.cookie("session") orelse "not logged in";
+    try ctx.text(.ok, session);
+}
+
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -56,6 +67,8 @@ pub fn main() !void {
     try router.post("/echo", echo);
     try router.get("/hits", hits);
     try router.get("/assets/*path", assets);
+    try router.get("/login", login);
+    try router.get("/whoami", whoami);
 
     var app_state: AppState = .{};
 

@@ -1,6 +1,6 @@
 # zoink
 
-A small HTTP server library for Zig 0.16, built on `std.http.Server` and the new `std.Io` interface.
+A small HTTP server library for Zig, built on `std.http.Server` and the new `std.Io` interface.
 
 - HTTP/1.1 request parsing via the standard library — zoink only adds routing, middleware, and response helpers on top
 - Backend-agnostic concurrency: pass any `std.Io` implementation, e.g. `std.Io.Uring` on Linux for a single-threaded event loop, or `std.Io.Threaded` for a portable thread-pool fallback
@@ -9,16 +9,15 @@ A small HTTP server library for Zig 0.16, built on `std.http.Server` and the new
 - JSON request/response helpers
 - Static file serving with path traversal protection
 
-## Requirements
-
-Zig 0.16.0.
+![Static Badge](https://img.shields.io/badge/Zig-0.16.0-ec915c?style=flat-square&logo=zig)
+![Tests](https://img.shields.io/github/actions/workflow/status/ciathefed/zoink/zig.yml?label=Tests%20%F0%9F%A7%AA&style=flat-square)
 
 ## Install
 
 Add zoink as a dependency:
 
 ```bash
-zig fetch --save git+https://github.com/<you>/zoink
+zig fetch --save git+https://github.com/ciathefed/zoink
 ```
 
 Then in `build.zig`:

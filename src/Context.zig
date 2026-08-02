@@ -30,7 +30,10 @@ max_body_bytes: usize = 1024 * 1024,
 
 chain: []const router.Handler = &.{},
 chain_pos: usize = 0,
-responded: bool = false,
+/// Whether a response has been sent yet. Atomic because the server's
+/// per-request watchdog reads it from a separate task to decide whether a
+/// timeout can still be answered with a response or must hard-close instead.
+responded: std.atomic.Value(bool) = .init(false),
 
 /// Calls the next middleware or handler in the chain. Middleware must call
 /// this to continue processing; omitting the call short-circuits the chain
@@ -83,12 +86,23 @@ pub fn readJson(ctx: *Context, comptime T: type) !T {
     return std.json.parseFromSliceLeaky(T, ctx.allocator, body, .{});
 }
 
+pub const ReadBodyError = error{
+    /// The connection was closed (by the client, or by the server's own
+    /// timeout) before as many bytes as `content-length` promised arrived.
+    BodyTruncated,
+} || anyerror;
+
 /// Reads the entire request body into memory owned by the request arena,
 /// capped at `max_body_bytes`.
-pub fn readBody(ctx: *Context) ![]u8 {
+pub fn readBody(ctx: *Context) ReadBodyError![]u8 {
+    const expected = ctx.request.head.content_length;
     const scratch = try ctx.allocator.alloc(u8, 4096);
     const body_reader = try ctx.request.readerExpectContinue(scratch);
-    return body_reader.allocRemaining(ctx.allocator, .limited64(ctx.max_body_bytes));
+    const body = try body_reader.allocRemaining(ctx.allocator, .limited64(ctx.max_body_bytes));
+    if (expected) |len| {
+        if (body.len < len) return error.BodyTruncated;
+    }
+    return body;
 }
 
 pub const RespondOptions = struct {
@@ -109,7 +123,7 @@ pub fn respond(ctx: *Context, status: http.Status, content_type: []const u8, bod
     }
 
     primeBodyFraming(ctx.request);
-    ctx.responded = true;
+    ctx.responded.store(true, .release);
     try ctx.request.respond(body, .{
         .status = status,
         .keep_alive = options.keep_alive orelse ctx.request.head.keep_alive,
@@ -145,7 +159,7 @@ pub fn sendJson(ctx: *Context, status: http.Status, value: anytype) !void {
 
 pub fn noContent(ctx: *Context) !void {
     primeBodyFraming(ctx.request);
-    ctx.responded = true;
+    ctx.responded.store(true, .release);
     try ctx.request.respond("", .{
         .status = .no_content,
         .keep_alive = ctx.request.head.keep_alive,
@@ -154,7 +168,7 @@ pub fn noContent(ctx: *Context) !void {
 
 pub fn redirect(ctx: *Context, location: []const u8, permanent: bool) !void {
     primeBodyFraming(ctx.request);
-    ctx.responded = true;
+    ctx.responded.store(true, .release);
     try ctx.request.respond("", .{
         .status = if (permanent) .moved_permanently else .found,
         .keep_alive = ctx.request.head.keep_alive,

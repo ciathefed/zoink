@@ -1,4 +1,4 @@
-//! zoink: a small http server library for zig, built on `std.http.Server`
+//! zoink: A small http server library for Zig, built on `std.http.Server`
 //! and `std.Io`.
 const router = @import("router.zig");
 

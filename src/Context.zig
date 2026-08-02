@@ -34,6 +34,9 @@ chain_pos: usize = 0,
 /// per-request watchdog reads it from a separate task to decide whether a
 /// timeout can still be answered with a response or must hard-close instead.
 responded: std.atomic.Value(bool) = .init(false),
+/// Formatted `set-cookie` header values queued by `setCookie`, sent with
+/// the next response.
+pending_cookies: std.ArrayList([]const u8) = .empty,
 
 /// Calls the next middleware or handler in the chain. Middleware must call
 /// this to continue processing; omitting the call short-circuits the chain
@@ -71,6 +74,51 @@ pub fn header(ctx: *const Context, name: []const u8) ?[]const u8 {
         if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
     }
     return null;
+}
+
+/// Reads a cookie's value from the request's `cookie` header. Not
+/// percent-decoded; see `percentDecodeAlloc` if the value needs it.
+pub fn cookie(ctx: *const Context, name: []const u8) ?[]const u8 {
+    const raw = ctx.header("cookie") orelse return null;
+    var it = std.mem.splitScalar(u8, raw, ';');
+    while (it.next()) |pair| {
+        const trimmed = std.mem.trim(u8, pair, " ");
+        const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+        if (std.mem.eql(u8, trimmed[0..eq], name)) return trimmed[eq + 1 ..];
+    }
+    return null;
+}
+
+pub const CookieOptions = struct {
+    pub const SameSite = enum { strict, lax, none };
+
+    path: ?[]const u8 = "/",
+    domain: ?[]const u8 = null,
+    max_age_seconds: ?i64 = null,
+    http_only: bool = true,
+    /// Off by default since this library has no TLS support yet. Turn it
+    /// on yourself once serving over https.
+    secure: bool = false,
+    same_site: SameSite = .lax,
+};
+
+/// Queues a `set-cookie` header, sent with the next response from this
+/// context. `HttpOnly` and `SameSite=Lax` are applied unless overridden via
+/// `options`.
+pub fn setCookie(ctx: *Context, name: []const u8, value: []const u8, options: CookieOptions) !void {
+    var w: std.Io.Writer.Allocating = .init(ctx.allocator);
+    try w.writer.print("{s}={s}", .{ name, value });
+    if (options.path) |p| try w.writer.print("; Path={s}", .{p});
+    if (options.domain) |d| try w.writer.print("; Domain={s}", .{d});
+    if (options.max_age_seconds) |ma| try w.writer.print("; Max-Age={d}", .{ma});
+    if (options.http_only) try w.writer.writeAll("; HttpOnly");
+    if (options.secure) try w.writer.writeAll("; Secure");
+    try w.writer.writeAll(switch (options.same_site) {
+        .strict => "; SameSite=Strict",
+        .lax => "; SameSite=Lax",
+        .none => "; SameSite=None",
+    });
+    try ctx.pending_cookies.append(ctx.allocator, w.written());
 }
 
 /// Percent-decodes `raw` into memory owned by the request arena.
@@ -112,23 +160,25 @@ pub const RespondOptions = struct {
 
 /// Sends a full response with an explicit content type.
 pub fn respond(ctx: *Context, status: http.Status, content_type: []const u8, body: []const u8, options: RespondOptions) !void {
-    var headers_buf: [8]http.Header = undefined;
-    var n: usize = 0;
-    headers_buf[n] = .{ .name = "content-type", .value = content_type };
-    n += 1;
-    for (options.extra_headers) |h| {
-        if (n >= headers_buf.len) break;
-        headers_buf[n] = h;
-        n += 1;
-    }
+    const headers = try ctx.buildHeaders(content_type, options.extra_headers);
 
     primeBodyFraming(ctx.request);
     ctx.responded.store(true, .release);
     try ctx.request.respond(body, .{
         .status = status,
         .keep_alive = options.keep_alive orelse ctx.request.head.keep_alive,
-        .extra_headers = headers_buf[0..n],
+        .extra_headers = headers,
     });
+}
+
+/// Assembles `content-type` (if any), `extra`, and any cookies queued via
+/// `setCookie`, in that order, into memory owned by the request arena.
+fn buildHeaders(ctx: *Context, content_type: ?[]const u8, extra: []const http.Header) ![]const http.Header {
+    var list: std.ArrayList(http.Header) = .empty;
+    if (content_type) |ct| try list.append(ctx.allocator, .{ .name = "content-type", .value = ct });
+    try list.appendSlice(ctx.allocator, extra);
+    for (ctx.pending_cookies.items) |c| try list.append(ctx.allocator, .{ .name = "set-cookie", .value = c });
+    return list.toOwnedSlice(ctx.allocator);
 }
 
 /// A request whose method allows a body but which declares neither
@@ -158,20 +208,25 @@ pub fn sendJson(ctx: *Context, status: http.Status, value: anytype) !void {
 }
 
 pub fn noContent(ctx: *Context) !void {
+    const headers = try ctx.buildHeaders(null, &.{});
+
     primeBodyFraming(ctx.request);
     ctx.responded.store(true, .release);
     try ctx.request.respond("", .{
         .status = .no_content,
         .keep_alive = ctx.request.head.keep_alive,
+        .extra_headers = headers,
     });
 }
 
 pub fn redirect(ctx: *Context, location: []const u8, permanent: bool) !void {
+    const headers = try ctx.buildHeaders(null, &.{.{ .name = "location", .value = location }});
+
     primeBodyFraming(ctx.request);
     ctx.responded.store(true, .release);
     try ctx.request.respond("", .{
         .status = if (permanent) .moved_permanently else .found,
         .keep_alive = ctx.request.head.keep_alive,
-        .extra_headers = &.{.{ .name = "location", .value = location }},
+        .extra_headers = headers,
     });
 }

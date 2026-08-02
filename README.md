@@ -1,34 +1,34 @@
 # zoink
 
-a small http server library for zig 0.16, built on `std.http.Server` and the new `std.Io` interface.
+A small HTTP server library for Zig 0.16, built on `std.http.Server` and the new `std.Io` interface.
 
-- http/1.1 request parsing via the standard library — zoink only adds routing, middleware, and response helpers on top
-- backend-agnostic concurrency: pass any `std.Io` implementation, e.g. `std.Io.Uring` on linux for a single-threaded event loop, or `std.Io.Threaded` for a portable thread-pool fallback
-- path params (`:id`) and wildcards (`*path`)
-- middleware chaining via `ctx.next()`
-- json request/response helpers
-- static file serving with path traversal protection
+- HTTP/1.1 request parsing via the standard library — zoink only adds routing, middleware, and response helpers on top
+- Backend-agnostic concurrency: pass any `std.Io` implementation, e.g. `std.Io.Uring` on Linux for a single-threaded event loop, or `std.Io.Threaded` for a portable thread-pool fallback
+- Path params (`:id`) and wildcards (`*path`)
+- Middleware chaining via `ctx.next()`
+- JSON request/response helpers
+- Static file serving with path traversal protection
 
-## requirements
+## Requirements
 
-zig 0.16.0.
+Zig 0.16.0.
 
-## install
+## Install
 
-add zoink as a dependency:
+Add zoink as a dependency:
 
 ```bash
 zig fetch --save git+https://github.com/<you>/zoink
 ```
 
-then in `build.zig`:
+Then in `build.zig`:
 
 ```zig
 const zoink = b.dependency("zoink", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("zoink", zoink.module("zoink"));
 ```
 
-## quick start
+## Quick start
 
 ```zig
 const std = @import("std");
@@ -68,13 +68,13 @@ pub fn main() !void {
 }
 ```
 
-see [`examples/basic.zig`](examples/basic.zig) for a fuller example covering middleware, json, app state, and static files. run it with:
+See [`examples/basic.zig`](examples/basic.zig) for a fuller example covering middleware, JSON, app state, and static files. Run it with:
 
 ```bash
 zig build run
 ```
 
-## routing
+## Routing
 
 ```zig
 try router.get("/users/:id", handler);
@@ -85,16 +85,18 @@ try router.delete("/users/:id", handler);
 try router.any("/webhook", handler); // matches any method
 ```
 
-path segments starting with `:` capture a single param; a segment starting with `*` must be last and captures the rest of the path (including slashes):
+Path segments starting with `:` capture a single param; a segment starting with `*` must be last and captures the rest of the path (including slashes):
 
 ```zig
 try router.get("/assets/*path", handler);
 // GET /assets/css/app.css -> ctx.param("path") == "css/app.css"
 ```
 
-## middleware
+Requests to a path that matches a route but with the wrong method get a `405` with an `Allow` header instead of a `404`.
 
-register with `router.use`; call `ctx.next()` to continue the chain, or return without calling it to short-circuit:
+## Middleware
+
+Register with `router.use`; call `ctx.next()` to continue the chain, or return without calling it to short-circuit:
 
 ```zig
 fn logger(ctx: *zoink.Context) !void {
@@ -105,21 +107,26 @@ fn logger(ctx: *zoink.Context) !void {
 try router.use(logger);
 ```
 
-middleware runs for every request, including ones that don't match a route (so a logger still sees 404s).
+Middleware runs for every request, including ones that don't match a route (so a logger still sees 404s).
 
-## context
+## Context
 
 `*zoink.Context` is passed to every handler and carries the request and response helpers:
 
-- `ctx.param(name)`, `ctx.query(name)`, `ctx.header(name)`
+- `ctx.param(name)`, `ctx.query(name)`, `ctx.header(name)`, `ctx.cookie(name)`
 - `ctx.text(status, body)`, `ctx.html(status, body)`, `ctx.sendJson(status, value)`, `ctx.noContent()`, `ctx.redirect(location, permanent)`
+- `ctx.setCookie(name, value, options)` — `HttpOnly` and `SameSite=Lax` by default
 - `ctx.readJson(T)`, `ctx.readBody()`
 - `ctx.state(T)` to retrieve the app state pointer set via `Server.Options.app_state`
 - `ctx.allocator` — an arena scoped to the request; anything allocated through it is freed automatically
 
-## static files
+## Timeouts
 
-not registered directly as a route handler — call it from your own handler so the root directory can be anything you want, including a runtime value:
+`Server.Options` has `idle_timeout` (default 60s) and `request_timeout` (default 30s), both configurable or `null` to disable. They bound time spent blocked on the client socket — a slow request body upload, or a client too slow to read the response — and respond `408` where possible. They do not bound a handler blocked on something other than the client connection (a sleep, a slow downstream call, a lock, or CPU-bound work); see the doc comment on `request_timeout` for why.
+
+## Static files
+
+Not registered directly as a route handler — call it from your own handler so the root directory can be anything you want, including a runtime value:
 
 ```zig
 fn assets(ctx: *zoink.Context) !void {
@@ -129,9 +136,9 @@ fn assets(ctx: *zoink.Context) !void {
 try router.get("/assets/*path", assets);
 ```
 
-rejects any path containing a `..` segment.
+Rejects any path containing a `..` segment.
 
-## testing
+## Testing
 
 ```bash
 zig build test

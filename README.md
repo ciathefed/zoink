@@ -93,6 +93,16 @@ try router.get("/assets/*path", handler);
 
 Requests to a path that matches a route but with the wrong method get a `405` with an `Allow` header instead of a `404`.
 
+Group routes under a shared prefix with `router.group`, so you don't repeat it on every call:
+
+```zig
+const api = router.group("/api");
+try api.get("/users", listUsers);      // matches "/api/users"
+try api.get("/users/:id", getUser);    // matches "/api/users/:id"
+```
+
+`prefix` must start with `/` and must not end with one. Groups aren't nestable yet.
+
 ## Middleware
 
 Register with `router.use`; call `ctx.next()` to continue the chain, or return without calling it to short-circuit:
@@ -113,6 +123,7 @@ Middleware runs for every request, including ones that don't match a route (so a
 `*zoink.Context` is passed to every handler and carries the request and response helpers:
 
 - `ctx.param(name)`, `ctx.query(name)`, `ctx.header(name)`, `ctx.cookie(name)`
+- `ctx.percentDecodeAlloc(raw)` — percent-decodes a query/param value that needs it; `param`/`query`/`cookie` return raw values otherwise
 - `ctx.text(status, body)`, `ctx.html(status, body)`, `ctx.sendJson(status, value)`, `ctx.noContent()`, `ctx.redirect(location, permanent)`
 - `ctx.setCookie(name, value, options)` — `HttpOnly` and `SameSite=Lax` by default
 - `ctx.readJson(T)`, `ctx.readBody()`

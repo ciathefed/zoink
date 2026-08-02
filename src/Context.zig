@@ -18,6 +18,9 @@ path: []const u8,
 /// Everything after `?` in the request target, or an empty string.
 query_string: []const u8,
 params: router.Params = .{},
+/// Filled by the server when the request's path matched a route but its
+/// method didn't; empty otherwise.
+allowed_methods: router.AllowedMethods = .{},
 
 /// Opaque pointer to application state set on the `Server`, if any. Use
 /// `state` to retrieve it as a concrete type.
@@ -105,12 +108,26 @@ pub fn respond(ctx: *Context, status: http.Status, content_type: []const u8, bod
         n += 1;
     }
 
+    primeBodyFraming(ctx.request);
     ctx.responded = true;
     try ctx.request.respond(body, .{
         .status = status,
         .keep_alive = options.keep_alive orelse ctx.request.head.keep_alive,
         .extra_headers = headers_buf[0..n],
     });
+}
+
+/// A request whose method allows a body but which declares neither
+/// `content-length` nor `transfer-encoding` (a body-less POST/PUT/PATCH,
+/// which is valid HTTP) crashes `std.http.Server.Request.respond`'s internal
+/// keep-alive body discarding, which asserts one of those is set. Settle the
+/// body framing ourselves first so that assert never sees the ambiguous
+/// state. A no-op once the body has already been read by the handler.
+fn primeBodyFraming(request: *http.Server.Request) void {
+    if (request.server.reader.state != .received_head) return;
+    if (!request.head.method.requestHasBody()) return;
+    if (request.head.transfer_encoding != .none or request.head.content_length != null) return;
+    _ = request.readerExpectContinue(&.{}) catch {};
 }
 
 pub fn text(ctx: *Context, status: http.Status, body: []const u8) !void {
@@ -127,6 +144,7 @@ pub fn sendJson(ctx: *Context, status: http.Status, value: anytype) !void {
 }
 
 pub fn noContent(ctx: *Context) !void {
+    primeBodyFraming(ctx.request);
     ctx.responded = true;
     try ctx.request.respond("", .{
         .status = .no_content,
@@ -135,6 +153,7 @@ pub fn noContent(ctx: *Context) !void {
 }
 
 pub fn redirect(ctx: *Context, location: []const u8, permanent: bool) !void {
+    primeBodyFraming(ctx.request);
     ctx.responded = true;
     try ctx.request.respond("", .{
         .status = if (permanent) .moved_permanently else .found,
